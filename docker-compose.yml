@@ -1,0 +1,97 @@
+services:
+
+  postgres_kc:
+    image: postgres:15.0
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - duckcloud-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - keycloak_postgres_data:/var/lib/postgresql/data
+
+  keycloak:
+    image: keycloak/keycloak:22.0.5
+    environment:
+      KC_DB: postgres
+      KC_DB_SCHEMA: public
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_URL_HOST: postgres_kc
+      KC_DB_URL_PORT: 5432
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: postgres
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      #KC_LOG_LEVEL: DEBUG
+      KC_PROXY_ADDRESS_FORWARDING: true
+      KC_PROXY_HEADERS: xforwarded
+      KC_HOSTNAME_STRICT: false
+      KC_HOSTNAME_STRICT_HTTPS: false
+      KC_HTTP_ENABLED: true
+      KC_HTTP_RELATIVE_PATH: /auth
+    entrypoint: /opt/keycloak/bin/kc.sh start
+    volumes:
+      - ./keycloak/import:/opt/keycloak/data/import
+    depends_on:
+      - postgres_kc
+    networks:
+      - duckcloud-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.keycloak.rule=PathPrefix(`/auth`)"
+      - "traefik.http.services.keycloak.loadbalancer.server.port=8080"
+
+  proxy:
+    image: traefik:3.1
+    mem_limit: 128m
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:8080"
+      - "--entryPoints.traefik.address=:8888"
+      - "--accesslog=true"
+      - "--providers.docker.exposedByDefault=false"
+      - "--ping.entrypoint=web"
+      - "--ping=true"
+      - "--tracing.otlp=true"
+      - "--tracing.otlp.http.endpoint=http://jaeger:4318/v1/traces"
+    ports:
+      - "8080:8080"
+      - "8888:8888"
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - duckcloud-network
+    security_opt:
+      - label=disable # Required for accessing the Docker socket on Selinux enabled systems
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  nginx:
+    image: nginx:1.27
+    ports:
+      - "8081:80"
+    networks:
+      - duckcloud-network
+    volumes:
+      - ./nginx/app.conf:/etc/nginx/conf.d/app.conf
+
+
+networks:
+  duckcloud-network:
+    driver: bridge
+
+volumes:
+  keycloak_postgres_data:
